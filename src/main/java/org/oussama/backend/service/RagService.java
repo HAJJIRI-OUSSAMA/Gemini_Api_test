@@ -1,43 +1,72 @@
 package org.oussama.backend.service;
 
+import org.oussama.backend.models.DocumentModel;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
-
-import java.io.IOException;
-import java.util.Scanner;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 public class RagService {
-
+    private final DocumentService documentService;
+    private final EmbeddingService embeddingService;
     private final GeminiService geminiService;
 
-    public RagService(GeminiService geminiService) {
+    public RagService(DocumentService documentService, EmbeddingService embeddingService, GeminiService geminiService) {
+        this.documentService = documentService;
+        this.embeddingService = embeddingService;
         this.geminiService = geminiService;
     }
 
     public String generateResponse(String query) {
-        String context = retrieveContext(query);
-        String prompt = "Context: " + context + "\n\nQuery: " + query;
-        return geminiService.generateResponse(prompt);
-    }
+        try {
+            // Log the incoming query
+            System.out.println("Processing query: " + query);
 
-    public String processPdfAndGenerateResponse(MultipartFile pdfFile, String query) throws IOException {
-        String pdfContent = extractPdfContent(pdfFile);
-        String prompt = "PDF Content: " + pdfContent + "\n\nQuery: " + query;
-        return geminiService.generateResponse(prompt);
-    }
+            // Generate query embedding
+            System.out.println("Generating embedding for query...");
+            double[] queryEmbedding = embeddingService.generateEmbeddingForQuery(query);
 
-    private String extractPdfContent(MultipartFile pdfFile) throws IOException {
-        StringBuilder content = new StringBuilder();
-        try (Scanner scanner = new Scanner(pdfFile.getInputStream())) {
-            while (scanner.hasNextLine()) {
-                content.append(scanner.nextLine()).append("\n");
+            // Find similar documents
+            System.out.println("Finding similar documents...");
+            List<DocumentModel> similarDocuments = documentService.findMostSimilarDocuments(queryEmbedding, 5);
+
+            // Log number of documents found
+            System.out.println("Found " + similarDocuments.size() + " similar documents");
+
+            // Combine document contents with safety check
+            String context = "";
+            if (!similarDocuments.isEmpty()) {
+                context = similarDocuments.stream()
+                        .map(DocumentModel::getContent)
+                        .filter(content -> content != null && !content.trim().isEmpty())
+                        .collect(Collectors.joining("\n\n"));
             }
-        }
-        return content.toString();
-    }
 
-    private String retrieveContext(String query) {
-        return "This is a sample context for the query: " + query;
+            // Create enhanced prompt
+            String enhancedPrompt = String.format("""
+                Using the following context, please answer the query. If the context doesn't contain relevant information, 
+                respond based on your general knowledge.
+
+                Context:
+                %s
+
+                Query:
+                %s
+
+                Answer:""", context, query);
+
+            System.out.println("Sending enhanced prompt to Gemini...");
+
+            // Generate response
+            String response = geminiService.generateResponse(enhancedPrompt);
+
+            System.out.println("Successfully generated response");
+            return response;
+
+        } catch (Exception e) {
+            System.err.println("Error in RagService: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Error generating response: " + e.getMessage(), e);
+        }
     }
 }
